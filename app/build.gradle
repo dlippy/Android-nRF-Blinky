@@ -6,11 +6,13 @@ android {
 
     defaultConfig {
         applicationId "no.nordicsemi.android.nrfblinky"
-        minSdkVersion 18
+        minSdkVersion 21
         targetSdkVersion 27
         versionCode 6
         versionName "2.1.0"
         resConfigs "en"
+        multiDexEnabled true
+
     }
 
     buildTypes {
@@ -50,4 +52,6 @@ dependencies {
     implementation 'no.nordicsemi.android:log:2.1.1'
     // BLE library
     implementation 'no.nordicsemi.android:ble:1.2.0'
+    implementation 'com.android.support:multidex:1.0.3'
+
 }

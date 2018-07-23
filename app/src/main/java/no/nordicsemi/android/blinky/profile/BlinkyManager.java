@@ -24,6 +24,7 @@ package no.nordicsemi.android.blinky.profile;
 
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
 import android.content.Context;
 import android.support.annotation.NonNull;
@@ -34,7 +35,12 @@ import java.util.UUID;
 
 import no.nordicsemi.android.ble.BleManager;
 import no.nordicsemi.android.ble.Request;
+import no.nordicsemi.android.log.ILogSession;
 import no.nordicsemi.android.log.LogContract;
+import android.util.Log;
+
+import static android.bluetooth.BluetoothGattCharacteristic.FORMAT_UINT16;
+import static android.bluetooth.BluetoothGattCharacteristic.FORMAT_UINT32;
 
 public class BlinkyManager extends BleManager<BlinkyManagerCallbacks> {
 	/** Nordic Blinky Service UUID. */
@@ -44,10 +50,25 @@ public class BlinkyManager extends BleManager<BlinkyManagerCallbacks> {
 	/** LED characteristic UUID. */
 	private final static UUID LBS_UUID_LED_CHAR = UUID.fromString("00001525-1212-efde-1523-785feabcd123");
 
-	private BluetoothGattCharacteristic mButtonCharacteristic, mLedCharacteristic;
+	private final static UUID CLIENT_CHARACTERISTIC_CONFIG = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+
+	//inside ride service uuid
+	public final static UUID IR_UUID_SERVICE = UUID.fromString("98CD1800-9228-4D42-B679-9BADF04CC3F6");
+	/** Weight characteristic UUID. */
+	private final static UUID IR_UUID_WEIGHT_CHAR = UUID.fromString("98CD0006-9228-4D42-B679-9BADF04CC3F6");
+
+	//inside ride service uuid
+	public final static UUID FTMS_UUID_SERVICE = UUID.fromString("00001826-0000-1000-8000-00805f9b34fb");
+	/** Weight characteristic UUID. */
+	private final static UUID FTMS_UUID_INDOOR_BIKE_DATA_CHAR = UUID.fromString("00002AD2-0000-1000-8000-00805f9b34fb");
+	public ILogSession logSession;
+
+	private BluetoothGattCharacteristic mButtonCharacteristic, mLedCharacteristic, mWeightCharacteristic, mBikeDataCharacteristic;
 
 	public BlinkyManager(final Context context) {
+
 		super(context);
+		setLogger(logSession);
 	}
 
 	@NonNull
@@ -79,19 +100,25 @@ public class BlinkyManager extends BleManager<BlinkyManagerCallbacks> {
 
 		@Override
 		public boolean isRequiredServiceSupported(final BluetoothGatt gatt) {
-			final BluetoothGattService service = gatt.getService(LBS_UUID_SERVICE);
+			BluetoothGattService service = gatt.getService(IR_UUID_SERVICE);
 			if (service != null) {
-				mButtonCharacteristic = service.getCharacteristic(LBS_UUID_BUTTON_CHAR);
-				mLedCharacteristic = service.getCharacteristic(LBS_UUID_LED_CHAR);
+				mWeightCharacteristic = service.getCharacteristic(IR_UUID_WEIGHT_CHAR);
 			}
 
-			boolean writeRequest = false;
-			if (mLedCharacteristic != null) {
-				final int rxProperties = mLedCharacteristic.getProperties();
-				writeRequest = (rxProperties & BluetoothGattCharacteristic.PROPERTY_WRITE) > 0;
+			if (mWeightCharacteristic != null) {
+				readCharacteristic(mWeightCharacteristic);
 			}
 
-			return mButtonCharacteristic != null && mLedCharacteristic != null && writeRequest;
+			service = gatt.getService(FTMS_UUID_SERVICE);
+			if (service != null) {
+				mBikeDataCharacteristic = service.getCharacteristic(FTMS_UUID_INDOOR_BIKE_DATA_CHAR);
+			}
+			if (mBikeDataCharacteristic != null) {
+				enableNotifications(mBikeDataCharacteristic);
+
+			}
+
+			return mWeightCharacteristic != null;
 		}
 
 		@Override
@@ -103,14 +130,8 @@ public class BlinkyManager extends BleManager<BlinkyManagerCallbacks> {
 		@Override
 		protected void onCharacteristicRead(final BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic) {
 			final int data = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT8, 0);
-			if (characteristic == mLedCharacteristic) {
-				final boolean ledOn = data == 0x01;
-				log(LogContract.Log.Level.APPLICATION, "LED " + (ledOn ? "ON" : "OFF"));
-				mCallbacks.onDataSent(ledOn);
-			} else {
-				final boolean buttonPressed = data == 0x01;
-				log(LogContract.Log.Level.APPLICATION, "Button " + (buttonPressed ? "pressed" : "released"));
-				mCallbacks.onDataReceived(buttonPressed);
+			if (characteristic == mWeightCharacteristic) {
+				Log.d("WEIGHT", Integer.toString(mWeightCharacteristic.getIntValue(FORMAT_UINT16, 0)));
 			}
 		}
 
@@ -126,10 +147,18 @@ public class BlinkyManager extends BleManager<BlinkyManagerCallbacks> {
 		@Override
 		public void onCharacteristicNotified(final BluetoothGatt gatt, final BluetoothGattCharacteristic characteristic) {
 			// This method is only called for Button characteristic
-			final int data = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT8, 0);
-			final boolean buttonPressed = data == 0x01;
-			log(LogContract.Log.Level.APPLICATION, "Button " + (buttonPressed ? "pressed" : "released"));
-			mCallbacks.onDataReceived(buttonPressed);
+			if (characteristic == mBikeDataCharacteristic) {
+				final double KPH_TO_MPH_CONVERSION_FACTOR = 0.621371;
+				double instantaneous_speed = mBikeDataCharacteristic.getIntValue(FORMAT_UINT16, 2) / 100 * KPH_TO_MPH_CONVERSION_FACTOR;
+				double instantaneous_cadence = mBikeDataCharacteristic.getIntValue(FORMAT_UINT16, 4) / 2;
+				double total_distance = mBikeDataCharacteristic.getIntValue(FORMAT_UINT32, 6) & 0xFFFFFF;  //this is in meters need to convert to miles in app (note only 3 bytes are the distance so we get rid of last byte with & 0xffffff
+				double resistance = mBikeDataCharacteristic.getIntValue(FORMAT_UINT16, 9);
+				double power = mBikeDataCharacteristic.getIntValue(FORMAT_UINT16, 11);
+				double time = mBikeDataCharacteristic.getIntValue(FORMAT_UINT16, 13);
+				String logString = String.format("Speed: %.1f \n Cadence: %.1f \n Distance: %.1f\n Resistance: %.1f \n Power: %.1f \n Time: %.1f \n",
+						instantaneous_speed, instantaneous_cadence, total_distance, resistance, power, time);
+				Log.d("BIKEDATA", logString);
+			}
 		}
 	};
 
